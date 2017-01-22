@@ -16,6 +16,7 @@
 #include <linux/bio.h>
 #include <linux/dcache.h>
 #include <crypto/skcipher.h>
+#include <crypto/aes.h>
 #include <uapi/linux/fs.h>
 
 #define FS_KEY_DERIVATION_NONCE_SIZE		16
@@ -57,11 +58,13 @@ struct fscrypt_context {
 
 /* Encryption parameters */
 #define FS_XTS_TWEAK_SIZE		16
-#define FS_AES_128_ECB_KEY_SIZE		16
-#define FS_AES_256_GCM_KEY_SIZE		32
-#define FS_AES_256_CBC_KEY_SIZE		32
-#define FS_AES_256_CTS_KEY_SIZE		32
-#define FS_AES_256_XTS_KEY_SIZE		64
+#define FS_AES_128_ECB_KEY_SIZE		AES_KEYSIZE_128
+#define FS_AES_256_GCM_KEY_SIZE		AES_KEYSIZE_256
+#define FS_AES_256_CBC_KEY_SIZE		AES_KEYSIZE_256
+#define FS_AES_256_CTS_KEY_SIZE		AES_KEYSIZE_256
+#define FS_AES_256_KEY_SIZE AES_KEYSIZE_256
+#define FS_AES_256_XTS_KEY_SIZE		AES_KEYSIZE_256*2
+#define FS_AES_BLOCK_SIZE   AES_BLOCK_SIZE
 #define FS_MAX_KEY_SIZE			64
 
 #define FS_KEY_DESC_PREFIX		"fscrypt:"

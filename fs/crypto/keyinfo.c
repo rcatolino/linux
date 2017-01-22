@@ -24,13 +24,67 @@ static void derive_crypt_complete(struct crypto_async_request *req, int rc)
 }
 
 /**
- * derive_key_aes() - Derive a key using AES-128-ECB
+ * derive_key_aes() - Derive a key using AES-256(nonce) || AES-256(AES-256(nonce)) || ...
  * @deriving_key: Encryption key used for derivation.
  * @source_key:   Source key to which to apply derivation.
  * @derived_key:  Derived key.
  *
  * Return: Zero on success; non-zero otherwise.
  */
+static int derive_key_aes2(u8 nonce[FS_AES_BLOCK_SIZE],
+				u8 cipher_key[FS_AES_256_KEY_SIZE],
+				u8 result_key[FS_MAX_KEY_SIZE])
+{
+  int i, res = 0;
+	struct skcipher_request *req = NULL;
+	DECLARE_FS_COMPLETION_RESULT(ecr);
+	struct scatterlist nonce_sg;
+  struct scatterlist *src_sg = &nonce_sg;
+  struct scatterlist result_sg[FS_MAX_KEY_SIZE/FS_AES_BLOCK_SIZE];
+	struct crypto_skcipher *tfm = crypto_alloc_skcipher("aes", 0, 0);
+  BUILD_BUG_ON(FS_MAX_KEY_SIZE % FS_AES_BLOCK_SIZE != 0);
+
+	if (IS_ERR(tfm)) {
+		res = PTR_ERR(tfm);
+		tfm = NULL;
+		goto out;
+	}
+	//crypto_skcipher_set_flags(tfm, CRYPTO_TFM_REQ_WEAK_KEY); // Why ?
+	req = skcipher_request_alloc(tfm, GFP_NOFS); // kmalloc can't use the filesystem
+	if (!req) {
+		res = -ENOMEM;
+		goto out;
+	}
+	skcipher_request_set_callback(req,
+			CRYPTO_TFM_REQ_MAY_BACKLOG | CRYPTO_TFM_REQ_MAY_SLEEP,
+			derive_crypt_complete, &ecr);
+	res = crypto_skcipher_setkey(tfm, cipher_key, FS_AES_256_KEY_SIZE);
+	if (res < 0)
+		goto out;
+
+	sg_init_one(src_sg, nonce, FS_AES_BLOCK_SIZE);
+  for (i = 0; i < ARRAY_SIZE(result_sg); i++) {
+    sg_init_one(&result_sg[i], &result_key[i*FS_AES_BLOCK_SIZE], FS_AES_BLOCK_SIZE);
+    skcipher_request_set_crypt(req, src_sg, &result_sg[i],
+        FS_AES_BLOCK_SIZE, NULL);
+    res = crypto_skcipher_encrypt(req);
+    if (res == -EINPROGRESS || res == -EBUSY) {
+      wait_for_completion(&ecr.completion);
+      res = ecr.res;
+    }
+    if (res) {
+      break;
+    }
+    reinit_completion(&ecr.completion);
+    src_sg = &result_sg[i];
+  }
+
+out:
+	skcipher_request_free(req);
+	crypto_free_skcipher(tfm);
+	return res;
+}
+
 static int derive_key_aes(u8 deriving_key[FS_AES_128_ECB_KEY_SIZE],
 				u8 source_key[FS_AES_256_XTS_KEY_SIZE],
 				u8 derived_key[FS_AES_256_XTS_KEY_SIZE])
@@ -114,7 +168,6 @@ static int validate_user_key(struct fscrypt_info *crypt_info,
 		goto out;
 	}
 	master_key = (struct fscrypt_key *)ukp->data;
-	BUILD_BUG_ON(FS_AES_128_ECB_KEY_SIZE != FS_KEY_DERIVATION_NONCE_SIZE);
 
 	if (master_key->size != FS_AES_256_XTS_KEY_SIZE) {
 		printk_once(KERN_WARNING
@@ -124,7 +177,8 @@ static int validate_user_key(struct fscrypt_info *crypt_info,
 		up_read(&keyring_key->sem);
 		goto out;
 	}
-	res = derive_key_aes(ctx->nonce, master_key->raw, raw_key);
+	BUILD_BUG_ON(FS_AES_BLOCK_SIZE != FS_KEY_DERIVATION_NONCE_SIZE);
+	res = derive_key_aes2(ctx->nonce, master_key->raw, raw_key);
 	up_read(&keyring_key->sem);
 	if (res)
 		goto out;
